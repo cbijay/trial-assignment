@@ -4,10 +4,12 @@ import { useSavedItems } from '@/features/saved_items/hooks/useSavedItems';
 import { SavedItem } from '@/features/saved_items/types';
 import { ErrorState } from '@/shared/components/ErrorState';
 import { Loader } from '@/shared/components/Loader';
+import { VirtualizedList } from '@/shared/components/VirtualizedList';
 import { useNavigation } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import React from 'react';
-import { Alert, FlatList, StyleSheet, Text, View } from 'react-native';
+import { Alert, StyleSheet, Text, View } from 'react-native';
+import { useRealTimeItems } from '../hooks/useRealTimeItems';
 
 type SavedItemsScreenNavigationProp = NativeStackNavigationProp<
   SavedItemsStackParamList,
@@ -16,15 +18,18 @@ type SavedItemsScreenNavigationProp = NativeStackNavigationProp<
 
 export const SavedItemsScreen: React.FC = () => {
   const navigation = useNavigation<SavedItemsScreenNavigationProp>();
+
+  const { savedItems: realTimeSavedItems, isLoading, error } = useRealTimeItems();
+
+  // Fallback to existing hook for mutations
   const {
-    savedItems,
-    isLoading,
-    error,
     toggleSave,
     isToggling,
     clearError,
-    refetchAllItems,
   } = useSavedItems();
+
+  // Filter saved items from real-time data
+  const savedItems = realTimeSavedItems;
 
   const handleToggleSave = React.useCallback(
     async (itemId: string, currentSavedStatus: boolean) => {
@@ -75,10 +80,9 @@ export const SavedItemsScreen: React.FC = () => {
   if (error) {
     return (
       <ErrorState
-        message={error instanceof Error ? error.message : String(error)}
+        message={error || 'An error occurred'}
         onRetry={() => {
           clearError();
-          refetchAllItems();
         }}
       />
     );
@@ -91,16 +95,11 @@ export const SavedItemsScreen: React.FC = () => {
         <Text style={styles.count}>{savedItems.length} items</Text>
       </View>
 
-      <FlatList
+      <VirtualizedList
         data={savedItems}
-        keyExtractor={item => item.id}
         renderItem={renderItem}
+        itemHeight={120}
         contentContainerStyle={styles.listContainer}
-        showsVerticalScrollIndicator={false}
-        initialNumToRender={10}
-        maxToRenderPerBatch={10}
-        windowSize={10}
-        removeClippedSubviews={true}
         ListEmptyComponent={
           <View style={styles.emptyState}>
             <Text style={styles.emptyText}>No saved items yet</Text>

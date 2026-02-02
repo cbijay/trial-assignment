@@ -62,6 +62,7 @@ export const useSavedItems = () => {
       isSaved: boolean;
     }) => {
       if (!user) throw new Error('User not authenticated');
+
       if (isSaved) {
         await itemService.saveItem(user.uid, itemId);
       } else {

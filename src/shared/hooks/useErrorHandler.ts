@@ -1,137 +1,220 @@
-import React, { useCallback, useState } from 'react';
+import { useNetworkStatus } from '@/shared/hooks/useNetworkStatus';
+import {
+  AppError,
+  ErrorCode,
+  ErrorFactory,
+  isAppError,
+} from '@/shared/utils/errorHandling';
+import { useCallback, useState } from 'react';
 
 interface ErrorState {
-  error: Error | null;
-  isError: boolean;
+  error: AppError | null;
+  hasError: boolean;
+  errorCount: number;
+  lastErrorTime: number;
 }
 
-interface UseErrorHandlerReturn extends ErrorState {
-  setError: (error: Error | string | null) => void;
-  clearError: () => void;
-  handleError: (error: Error | string, context?: string) => void;
-  retry: () => void;
+interface UseErrorHandlerOptions {
+  maxRetries?: number;
+  retryDelay?: number;
+  enableRetry?: boolean;
+  onError?: (error: AppError) => void;
+  onRecovery?: () => void;
 }
 
-export const useErrorHandler = (
-  initialError?: Error | null
-): UseErrorHandlerReturn => {
-  const [state, setState] = useState<ErrorState>({
-    error: initialError || null,
-    isError: !!initialError,
+export const useErrorHandler = (options: UseErrorHandlerOptions = {}) => {
+  const {
+    maxRetries = 3,
+    retryDelay = 1000,
+    enableRetry = true,
+    onError,
+    onRecovery,
+  } = options;
+
+  const [errorState, setErrorState] = useState<ErrorState>({
+    error: null,
+    hasError: false,
+    errorCount: 0,
+    lastErrorTime: 0,
   });
 
-  const setError = useCallback((error: Error | string | null) => {
-    if (!error) {
-      setState({ error: null, isError: false });
-      return;
-    }
+  const { isConnected } = useNetworkStatus();
+  const isOnline = isConnected === true;
 
-    const errorObj = typeof error === 'string' ? new Error(error) : error;
-    setState({ error: errorObj, isError: true });
-  }, []);
+  const handleError = useCallback(
+    (error: unknown): AppError => {
+      let appError: AppError;
+
+      if (isAppError(error)) {
+        appError = error;
+      } else if (error instanceof Error) {
+        appError = {
+          code: ErrorCode.UNKNOWN_ERROR,
+          message: error.message,
+          userMessage: error.message,
+          originalError: error,
+          retryable: false,
+        };
+      } else {
+        appError = ErrorFactory.networkTimeout(); // Default error
+      }
+
+      setErrorState(prev => ({
+        error: appError,
+        hasError: true,
+        errorCount: prev.errorCount + 1,
+        lastErrorTime: Date.now(),
+      }));
+
+      onError?.(appError);
+      return appError;
+    },
+    [onError]
+  );
 
   const clearError = useCallback(() => {
-    setState({ error: null, isError: false });
-  }, []);
+    setErrorState({
+      error: null,
+      hasError: false,
+      errorCount: 0,
+      lastErrorTime: 0,
+    });
+    onRecovery?.();
+  }, [onRecovery]);
 
-  const handleError = useCallback((error: Error | string, context?: string) => {
-    const errorObj = typeof error === 'string' ? new Error(error) : error;
+  const canRetry = useCallback(
+    (error?: AppError) => {
+      const currentError = error || errorState.error;
+      if (!currentError) return false;
 
-    // Log error with context
-    console.error(`Error${context ? ` in ${context}` : ''}:`, errorObj);
+      return (
+        enableRetry &&
+        currentError.retryable &&
+        errorState.errorCount < maxRetries &&
+        isOnline
+      );
+    },
+    [enableRetry, errorState.error, errorState.errorCount, maxRetries, isOnline]
+  );
 
-    // In production, you might send this to an error reporting service
-    if (!__DEV__) {
-      // Example: Sentry.captureException(errorObj, { tags: { context } });
-    }
+  const executeWithErrorHandling = useCallback(
+    async <T>(
+      operation: () => Promise<T>,
+      customErrorHandler?: (error: unknown) => AppError
+    ): Promise<T> => {
+      try {
+        const result = await operation();
 
-    setState({ error: errorObj, isError: true });
-  }, []);
+        // Clear error on successful operation
+        if (errorState.hasError) {
+          clearError();
+        }
 
-  const retry = useCallback(() => {
-    setState({ error: null, isError: false });
-  }, []);
+        return result;
+      } catch (error) {
+        const appError = customErrorHandler
+          ? customErrorHandler(error)
+          : handleError(error);
+
+        // Auto-retry if possible
+        if (canRetry(appError)) {
+          setTimeout(
+            () => {
+              // Retry logic would be implemented by the caller
+            },
+            retryDelay * Math.pow(2, errorState.errorCount)
+          );
+        }
+
+        throw appError;
+      }
+    },
+    [
+      handleError,
+      clearError,
+      canRetry,
+      retryDelay,
+      errorState.errorCount,
+      errorState.hasError,
+    ]
+  );
 
   return {
-    ...state,
-    setError,
-    clearError,
+    error: errorState.error,
+    hasError: errorState.hasError,
+    errorCount: errorState.errorCount,
+    lastErrorTime: errorState.lastErrorTime,
     handleError,
-    retry,
+    clearError,
+    canRetry,
+    executeWithErrorHandling,
+    isOnline,
   };
 };
 
-/**
- * Hook for handling async operations with error boundaries
- */
-export const useErrorHandlerAsync = <T>(
-  asyncFunction: () => Promise<T>,
-  _dependencies: unknown[] = []
-) => {
-  const [state, setState] = useState<{
-    data: T | null;
-    loading: boolean;
-    error: Error | null;
-  }>({
-    data: null,
-    loading: false,
-    error: null,
+// Specialized error handlers for different scenarios
+export const useItemErrorHandler = () => {
+  const errorHandler = useErrorHandler({
+    maxRetries: 2,
+    retryDelay: 500,
+    onError: error => {
+      console.error('Item operation failed:', error);
+    },
   });
 
-  const execute = useCallback(async () => {
-    setState(prev => ({ ...prev, loading: true, error: null }));
+  const handleItemError = useCallback(
+    (error: unknown, _operation: string) => {
+      if (error instanceof Error && error.message.includes('not found')) {
+        return ErrorFactory.itemNotFound('unknown');
+      }
 
-    try {
-      const result = await asyncFunction();
-      setState({ data: result, loading: false, error: null });
-      return result;
-    } catch (error) {
-      const errorObj =
-        error instanceof Error ? error : new Error(String(error));
-      console.error('Async operation failed:', errorObj);
-      setState(prev => ({ ...prev, loading: false, error: errorObj }));
-      throw errorObj;
-    }
-  }, [asyncFunction]);
-
-  const reset = useCallback(() => {
-    setState({ data: null, loading: false, error: null });
-  }, []);
+      return errorHandler.handleError(error);
+    },
+    [errorHandler]
+  );
 
   return {
-    ...state,
-    execute,
-    reset,
+    ...errorHandler,
+    handleItemError,
   };
 };
 
-/**
- * Higher-order component for error handling
- */
-export const withErrorHandler = <P extends object>(
-  Component: React.ComponentType<P>,
-  errorHandler?: (error: Error) => void
-) => {
-  const WrappedComponent = (props: P) => {
-    const { handleError } = useErrorHandler();
+export const useDeepLinkErrorHandler = () => {
+  const errorHandler = useErrorHandler({
+    maxRetries: 1,
+    enableRetry: false, // Don't retry deep link errors
+    onError: error => {
+      console.error('Deep link error:', error);
+    },
+  });
 
-    React.useEffect(() => {
-      if (errorHandler) {
-        const handleErrorWrapper = (error: Error) => {
-          handleError(error, Component.displayName || Component.name);
-          errorHandler(error);
-        };
-
-        // Set up error handling for the component
-        (Component as { handleError?: (error: Error) => void }).handleError =
-          handleErrorWrapper;
+  const handleDeepLinkError = useCallback(
+    (error: unknown, url?: string) => {
+      if (error instanceof Error && error.message.includes('not found')) {
+        return ErrorFactory.deepLinkInvalid(url || 'unknown');
       }
-    }, [handleError]);
 
-    return React.createElement(Component, props as P);
+      return errorHandler.handleError(error);
+    },
+    [errorHandler]
+  );
+
+  return {
+    ...errorHandler,
+    handleDeepLinkError,
   };
+};
 
-  WrappedComponent.displayName = `withErrorHandler(${Component.displayName || Component.name})`;
+export const useNetworkErrorHandler = () => {
+  const errorHandler = useErrorHandler({
+    maxRetries: 5,
+    retryDelay: 2000,
+    onError: error => {
+      console.error('Network operation failed:', error);
+    },
+  });
 
-  return WrappedComponent;
+  return {
+    ...errorHandler,
+  };
 };

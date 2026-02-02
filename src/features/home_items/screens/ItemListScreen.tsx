@@ -1,8 +1,8 @@
 import { HomeStackParamList } from '@/app/navigation/HomeStack';
 import { useAuthStore } from '@/features/auth';
 import { ItemCard } from '@/features/home_items/components/ItemCard';
-import { useItems } from '@/features/home_items/hooks/useItems';
 import { Item } from '@/features/home_items/types';
+import { useRealTimeItems } from '@/features/saved_items/hooks/useRealTimeItems';
 import { useSavedItems } from '@/features/saved_items/hooks/useSavedItems';
 import { useNavigation } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
@@ -28,7 +28,7 @@ export const ItemListScreen: React.FC = () => {
   const navigation = useNavigation<ItemListScreenNavigationProp>();
   const { signOut } = useAuthStore();
 
-  const { items, isLoading, error, refetch } = useItems();
+  const { items, isLoading, error, refetch } = useRealTimeItems(50);
   const { savedItems, toggleSave, isToggling } = useSavedItems();
 
   const fadeAnim = React.useRef(new Animated.Value(0)).current;
@@ -215,7 +215,7 @@ export const ItemListScreen: React.FC = () => {
                 {error ? 'Error Loading Items' : 'No items found'}
               </Text>
               <Text style={styles.emptySubtext}>
-                {error?.message || 'Try adjusting your search or filters'}
+                {error || 'Try adjusting your search or filters'}
               </Text>
               {error && (
                 <TouchableOpacity

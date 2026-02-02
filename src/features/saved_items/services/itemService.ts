@@ -21,11 +21,15 @@ import {
   getDocsFromCache,
   getDocsFromServer,
   limit,
+  onSnapshot,
   orderBy,
   query,
+  QueryDocumentSnapshot,
+  QuerySnapshot,
   serverTimestamp,
   setDoc,
   startAfter,
+  Unsubscribe,
   updateDoc,
   where,
   writeBatch,
@@ -148,38 +152,127 @@ export const getUserSavedItemIds = async (
   return snapshot.docs.map(doc => doc.data().itemId);
 };
 
-export const saveItem = async (
+export const saveItemWithConflictResolution = async (
   userId: string,
-  itemId: string
+  itemId: string,
+  maxRetries = 3
 ): Promise<void> => {
-  try {
-    const saveDocId = `${userId}_${itemId}`;
-    const docRef = doc(db, COLLECTIONS.USER_SAVES, saveDocId);
-    await retryFirestoreOperation(() =>
-      setDoc(docRef, {
-        userId,
-        itemId,
-        savedAt: serverTimestamp(),
-      })
-    );
-  } catch (error) {
-    throw ErrorFactory.itemSaveFailed(itemId, error);
+  let attempts = 0;
+
+  while (attempts < maxRetries) {
+    try {
+      const saveDocId = `${userId}_${itemId}`;
+      const docRef = doc(db, COLLECTIONS.USER_SAVES, saveDocId);
+
+      // Check if document already exists
+      const existingDoc = await retryFirestoreOperation(() => getDoc(docRef));
+
+      if (existingDoc.exists()) {
+        // Item already saved, no conflict
+        return;
+      }
+
+      // Use server timestamp for optimistic concurrency
+      await retryFirestoreOperation(() =>
+        setDoc(docRef, {
+          userId,
+          itemId,
+          savedAt: serverTimestamp(),
+          version: Date.now(), // Simple version for conflict detection
+        })
+      );
+
+      return; // Success
+    } catch (error: unknown) {
+      attempts++;
+
+      const firestoreError = error as { code?: string; message?: string };
+      if (
+        firestoreError.code === 'permission-denied' ||
+        firestoreError.code === 'not-found'
+      ) {
+        throw ErrorFactory.fromFirestoreError(firestoreError, 'saveItem');
+      }
+
+      if (attempts >= maxRetries) {
+        throw ErrorFactory.itemSaveFailed(itemId, error);
+      }
+
+      // Exponential backoff for retry
+      await new Promise(resolve =>
+        setTimeout(resolve, Math.pow(2, attempts) * 100)
+      );
+    }
   }
 };
 
-export const unsaveItem = async (
+export const unsaveItemWithConflictResolution = async (
   userId: string,
-  itemId: string
+  itemId: string,
+  maxRetries = 3
 ): Promise<void> => {
+  let attempts = 0;
+
+  while (attempts < maxRetries) {
+    try {
+      const saveDocId = `${userId}_${itemId}`;
+      const docRef = doc(db, COLLECTIONS.USER_SAVES, saveDocId);
+
+      // Check if document exists before deleting
+      const existingDoc = await retryFirestoreOperation(() => getDoc(docRef));
+
+      if (!existingDoc.exists()) {
+        // Item not saved, no conflict
+        return;
+      }
+
+      await retryFirestoreOperation(() => deleteDoc(docRef));
+      return; // Success
+    } catch (error: unknown) {
+      attempts++;
+
+      const firestoreError = error as { code?: string; message?: string };
+      if (
+        firestoreError.code === 'permission-denied' ||
+        firestoreError.code === 'not-found'
+      ) {
+        throw ErrorFactory.fromFirestoreError(firestoreError, 'unsaveItem');
+      }
+
+      if (attempts >= maxRetries) {
+        throw ErrorFactory.fromFirestoreError(firestoreError, 'unsaveItem');
+      }
+
+      // Exponential backoff for retry
+      await new Promise(resolve =>
+        setTimeout(resolve, Math.pow(2, attempts) * 100)
+      );
+    }
+  }
+};
+
+export const toggleItemSaveWithConflictResolution = async (
+  userId: string,
+  itemId: string,
+  maxRetries = 3
+): Promise<{ isSaved: boolean }> => {
   try {
+    // Check current state first
     const saveDocId = `${userId}_${itemId}`;
     const docRef = doc(db, COLLECTIONS.USER_SAVES, saveDocId);
-    await retryFirestoreOperation(() => deleteDoc(docRef));
+    const existingDoc = await retryFirestoreOperation(() => getDoc(docRef));
+
+    if (existingDoc.exists()) {
+      // Currently saved, unsave it
+      await unsaveItemWithConflictResolution(userId, itemId, maxRetries);
+      return { isSaved: false };
+    } else {
+      // Currently not saved, save it
+      await saveItemWithConflictResolution(userId, itemId, maxRetries);
+      return { isSaved: true };
+    }
   } catch (error) {
-    throw ErrorFactory.fromFirestoreError(
-      error as { code?: string; message?: string },
-      'saveItem'
-    );
+    throw ErrorFactory.itemSaveFailed(itemId, error);
   }
 };
 
@@ -464,15 +557,81 @@ export const toggleItemSave = async (
   return isSaved ? saveItem(userId, itemId) : unsaveItem(userId, itemId);
 };
 
+// Legacy functions for backward compatibility
+export const saveItem = saveItemWithConflictResolution;
+export const unsaveItem = unsaveItemWithConflictResolution;
+
 export const itemService = {
   getAllItems,
   getAllItemsPaginated,
   getItem,
   getUserSavedItemIds,
   getSavedItems,
-  saveItem,
-  unsaveItem,
+  saveItem: saveItemWithConflictResolution,
+  unsaveItem: unsaveItemWithConflictResolution,
   createItem,
   updateItem,
   deleteItem,
+  toggleItemSave: toggleItemSaveWithConflictResolution,
+};
+
+// Real-time listeners
+export const subscribeToItems = (
+  callback: (items: Item[]) => void,
+  limitCount = 50
+): Unsubscribe => {
+  const q = query(itemsCol, orderBy('updatedAt', 'desc'), limit(limitCount));
+
+  return onSnapshot(
+    q,
+    (snapshot: QuerySnapshot<DocumentData>) => {
+      const items = snapshot.docs.map(transformItemDoc);
+      callback(items);
+    },
+    (error: unknown) => {
+      console.error('Error in items subscription:', error);
+      callback([]);
+    }
+  );
+};
+
+export const subscribeToUserSavedItems = (
+  userId: string,
+  callback: (savedItemIds: string[]) => void
+): Unsubscribe => {
+  const q = query(userSavesCol, where('userId', '==', userId));
+
+  return onSnapshot(
+    q,
+    (snapshot: QuerySnapshot<DocumentData>) => {
+      const savedItemIds = snapshot.docs.map(
+        (doc: QueryDocumentSnapshot<DocumentData>) =>
+          doc.data().itemId as string
+      );
+      callback(savedItemIds);
+    },
+    (error: unknown) => {
+      console.error('Error in saved items subscription:', error);
+      callback([]);
+    }
+  );
+};
+
+export const subscribeToItem = (
+  itemId: string,
+  callback: (item: Item | null) => void
+): Unsubscribe => {
+  const docRef = doc(db, COLLECTIONS.ITEMS, itemId);
+
+  return onSnapshot(
+    docRef,
+    (snapshot: DocumentSnapshot<DocumentData>) => {
+      const item = snapshot.exists() ? transformItemDoc(snapshot) : null;
+      callback(item);
+    },
+    (error: unknown) => {
+      console.error('Error in item subscription:', error);
+      callback(null);
+    }
+  );
 };
