@@ -1,0 +1,26 @@
+{
+  "expo": {
+    "name": "trial-assignment",
+    "slug": "trial-assignment",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "scheme": "trialassignment",
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.yourcompany.trialassignment",
+      "statusBar": {
+        "hidden": true,
+        "style": "light"
+      }
+    },
+    "android": {
+      "edgeToEdgeEnabled": true,
+      "predictiveBackGestureEnabled": false,
+      "package": "com.yourcompany.trialassignment"
+    },
+    "plugins": [
+      "expo-web-browser"
+    ]
+  }
+}
