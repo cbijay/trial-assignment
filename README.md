@@ -292,5 +292,3 @@ npm run test:coverage     # Run tests with coverage report
 ## License
 
 MIT License - see LICENSE file for details.
-
-# Feature-based
