@@ -1,4 +1,4 @@
-import { parseDeepLink } from '@/features/saved_items/services/linkingService';
+import { parseDeepLink, validateAndNavigateToItem } from '@/features/saved_items/services/linkingService';
 import * as Linking from 'expo-linking';
 import React, { useCallback, useEffect } from 'react';
 
@@ -12,19 +12,36 @@ interface DeepLinkHandlerProps {
 
 export const DeepLinkHandler: React.FC<DeepLinkHandlerProps> = ({ navigation }) => {
   const handleDeepLink = useCallback(
-    (url: string) => {
+    async (url: string) => {
       if (!url) return;
 
       try {
         const parsed = parseDeepLink(url);
         if (parsed?.itemId) {
-          navigation.navigate('SavedItemsTabStack', {
-            screen: 'ItemDetail',
-            params: { itemId: parsed.itemId },
-          });
+          // Validate item exists before navigation
+          const result = await validateAndNavigateToItem(parsed.itemId, navigation);
+
+          if (!result.success) {
+            console.error('Deep link validation failed:', result.error);
+            // Optionally show error to user or navigate to error screen
+            navigation.navigate('SavedItemsTabStack', {
+              screen: 'ItemDetail',
+              params: {
+                itemId: parsed.itemId,
+                error: result.error
+              },
+            });
+          }
         }
       } catch (error) {
         console.error('Error handling deep link:', error);
+        // Navigate to error screen or show user-friendly message
+        navigation.navigate('SavedItemsTabStack', {
+          screen: 'ItemDetail',
+          params: {
+            error: 'Invalid link format'
+          },
+        });
       }
     },
     [navigation]

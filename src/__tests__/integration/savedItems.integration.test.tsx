@@ -127,8 +127,8 @@ describe('Saved Items Integration Tests', () => {
     it('should load items and allow saving/unsaving', async () => {
       // Mock data
       const mockItems = [
-        { id: 'item1', title: 'Test Item 1', description: 'Description 1', updatedAt: Date.now() },
-        { id: 'item2', title: 'Test Item 2', description: 'Description 2', updatedAt: Date.now() },
+        { id: 'item1', title: 'Test Item 1', description: 'Description 1', updatedAt: Date.now(), userId: 'user123' },
+        { id: 'item2', title: 'Test Item 2', description: 'Description 2', updatedAt: Date.now(), userId: 'user123' },
       ];
 
       const mockUser = { uid: 'user123' };
@@ -179,7 +179,7 @@ describe('Saved Items Integration Tests', () => {
 
   describe('User Flow: Deep Linking', () => {
     it('should handle valid deep links to items', async () => {
-      const mockItem = { id: 'item123', title: 'Shared Item', description: 'Shared description', updatedAt: Date.now() };
+      const mockItem = { id: 'item123', title: 'Shared Item', description: 'Shared description', updatedAt: Date.now(), userId: 'user123' };
 
       jest.spyOn(itemService, 'getItem').mockResolvedValue(mockItem);
 
@@ -263,6 +263,7 @@ describe('Saved Items Integration Tests', () => {
         title: `Item ${i}`,
         description: `Description for item ${i}`,
         updatedAt: Date.now() - i * 1000,
+        userId: 'user123',
       }));
 
       jest.spyOn(itemService, 'getAllItemsPaginated').mockResolvedValue({
