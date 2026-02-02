@@ -1,4 +1,4 @@
-# Trial Assignment React Native App
+# Trial Assignment App
 
 A React Native application built with Expo, TypeScript, and Firebase for the trial assignment.
 
